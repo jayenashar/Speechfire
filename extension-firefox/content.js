@@ -33,7 +33,10 @@ function startRecording() {
     testServerConnection()
         .then(serverAvailable => {
             if (!serverAvailable) {
-                showErrorNotification("Cannot connect to Speechfire server. Please ensure it's running on http://127.0.0.1:5000");
+                chrome.runtime.sendMessage({ action: "getServerUrl" }, (serverResponse) => {
+                    const serverUrl = serverResponse.serverUrl || 'http://127.0.0.1:5000';
+                    showErrorNotification(`Cannot connect to Speechfire server. Please ensure it's running on ${serverUrl}`);
+                });
                 // Tell background script recording failed
                 chrome.runtime.sendMessage({ action: "recordingFailed" });
                 return;
@@ -85,65 +88,78 @@ function startRecording() {
 }
 
 function sendAudioForTranscription(audioBlob) {
-    // Request the selected language from background.js
-    chrome.runtime.sendMessage({ action: "getLanguage" }, (response) => {
-        const selectedLanguage = response.language || 'English'; // Default to English if no language is received
-
-        const formData = new FormData();
-        formData.append('audio_data', audioBlob, 'audio.wav');
-
-        // Send the language as a query string parameter
-        fetch(`http://127.0.0.1:5000/transcribe?lang=${encodeURIComponent(selectedLanguage)}`, {
-            method: 'POST',
-            body: formData,
-            signal: AbortSignal.timeout(30000) // 30 second timeout for transcription
-        })
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`Server error: ${response.status} ${response.statusText}`);
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.error) {
-                showErrorNotification(`Transcription failed: ${data.error}`);
-                return;
-            }
-            console.log("Transcription received:", data.transcription); // Log transcription for debugging
-            if (data.transcription) {
-                pasteTranscription(data.transcription);
-            } else {
-                showErrorNotification("No transcription received from server");
-            }
-        })
-        .catch(error => {
-            console.error('Transcription error:', error);
+    // Request the selected language and server URL from background.js
+    chrome.runtime.sendMessage({ action: "getLanguage" }, (languageResponse) => {
+        const selectedLanguage = languageResponse.language || 'English'; // Default to English if no language is received
+        
+        chrome.runtime.sendMessage({ action: "getServerUrl" }, (serverResponse) => {
+            const serverUrl = serverResponse.serverUrl || 'http://127.0.0.1:5000'; // Default server URL
             
-            // Determine error type and show appropriate message
-            if (error.name === 'AbortError' || error.name === 'TimeoutError') {
-                showErrorNotification("Request timed out. Please check if the Speechfire server is running.");
-            } else if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
-                showErrorNotification("Cannot connect to Speechfire server. Please ensure it's running on http://127.0.0.1:5000");
-            } else if (error.message.includes('Server error')) {
-                showErrorNotification(error.message);
-            } else {
-                showErrorNotification(`Transcription failed: ${error.message}`);
-            }
+            const formData = new FormData();
+            formData.append('audio_data', audioBlob, 'audio.wav');
+
+            // Send the language as a query string parameter
+            fetch(`${serverUrl}/transcribe?lang=${encodeURIComponent(selectedLanguage)}`, {
+                method: 'POST',
+                body: formData,
+                signal: AbortSignal.timeout(30000) // 30 second timeout for transcription
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`Server error: ${response.status} ${response.statusText}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) {
+                    showErrorNotification(`Transcription failed: ${data.error}`);
+                    return;
+                }
+                console.log("Transcription received:", data.transcription); // Log transcription for debugging
+                if (data.transcription) {
+                    pasteTranscription(data.transcription);
+                } else {
+                    showErrorNotification("No transcription received from server");
+                }
+            })
+            .catch(error => {
+                console.error('Transcription error:', error);
+
+                // Determine error type and show appropriate message
+                if (error.name === 'AbortError' || error.name === 'TimeoutError') {
+                    showErrorNotification("Request timed out. Please check if the Speechfire server is running.");
+                } else if (error.message.includes('Failed to fetch') || error.name === 'TypeError') {
+                    chrome.runtime.sendMessage({ action: "getServerUrl" }, (serverResponse) => {
+                        const serverUrl = serverResponse.serverUrl || 'http://127.0.0.1:5000';
+                        showErrorNotification(`Cannot connect to Speechfire server. Please ensure it's running on ${serverUrl}`);
+                    });
+                } else if (error.message.includes('Server error')) {
+                    showErrorNotification(error.message);
+                } else {
+                    showErrorNotification(`Transcription failed: ${error.message}`);
+                }
+            });
         });
     });
 }
 
 function testServerConnection() {
-    return fetch('http://127.0.0.1:5000/', {
-        method: 'GET',
-        signal: AbortSignal.timeout(100)
-    })
-    .then(response => {
-        return response.ok;
-    })
-    .catch(error => {
-        console.log('Server connection test failed:', error);
-        return false;
+    return new Promise((resolve) => {
+        chrome.runtime.sendMessage({ action: "getServerUrl" }, (serverResponse) => {
+            const serverUrl = serverResponse.serverUrl || 'http://127.0.0.1:5000';
+            
+            fetch(`${serverUrl}/`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(1000)
+            })
+            .then(response => {
+                resolve(response.ok);
+            })
+            .catch(error => {
+                console.log('Server connection test failed:', error);
+                resolve(false);
+            });
+        });
     });
 }
 
